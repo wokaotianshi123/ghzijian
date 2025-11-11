@@ -1,4 +1,4 @@
-// Cloudflare Pages Functions 中间件（无外部 ASSET_URL 依赖）
+// functions/_middleware.js
 const PREFIX = '/';
 const Config = { jsdelivr: 0 };
 const whiteList = [];
@@ -50,7 +50,6 @@ export default {
         return proxy(path, req);
       }
 
-      // 兜底：本地 404 页
       return fetch(new URL('/404.html', url).href);
     } catch (e) {
       return makeRes('Pages Functions error:\n' + (e.stack || e), 502);
