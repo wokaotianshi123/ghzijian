@@ -1,11 +1,8 @@
-// gh-proxy Pages Function (_worker.js)
-// 移除对 const ASSET_URL 的依赖，所有逻辑都在此文件内完成。
+// gh-proxy Pages Function (_worker.js) - 路径使用完整的URL作为目标
 
 /**
  * 核心处理函数
  * @param {Request} request
- * @param {object} env 环境变量
- * @param {object} ctx Context
  */
 export default {
     async fetch(request, env, ctx) {
@@ -33,12 +30,12 @@ async function handleRequest(request) {
         });
     }
 
+    // path 包含了 /https:/raw.githubusercontent.com/...
     const path = url.pathname.slice(1);
     const domain = url.host;
 
     // 1. 处理根路径 "/" 的请求 - 提供一个简单的 HTML 页面
     if (!path) {
-        // 在 Pages 部署中，我们不再依赖 ASSET_URL，而是直接提供一个简单的页面
         const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -50,24 +47,25 @@ async function handleRequest(request) {
         h1 { color: #333; }
         code { background: #eee; padding: 2px 4px; border-radius: 4px; }
         pre { background: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .usage { color: #007bff; font-weight: bold; }
     </style>
 </head>
 <body>
     <h1>GitHub 文件加速服务</h1>
     <p>当前服务部署在 <strong>Cloudflare Pages Functions</strong> 上，已脱离对外部 <code>ASSET_URL</code> 的依赖。</p>
     <h2>使用方法 (Usage):</h2>
-    <p>将 GitHub 的文件地址 (<code>https://github.com/...</code>) 或原始文件地址 (<code>https://raw.githubusercontent.com/...</code>) 替换为当前域名 (<code>https://${domain}/...</code>) 即可。</p>
+    <p>将 GitHub 的文件地址 (<code>https://...</code>) **完整地** 放在当前域名之后。</p>
+    <p class="usage">加速格式: <code>https://${domain}/[完整的目标 URL]</code></p>
     <h3>示例 (Examples):</h3>
     <ul>
         <li><strong>GitHub Release 文件:</strong>
             <pre>原地址: <code>https://github.com/user/repo/releases/download/v1.0.0/file.zip</code>
-加速后: <code>https://${domain}/github.com/user/repo/releases/download/v1.0.0/file.zip</code></pre>
+加速后: <code>https://${domain}/https://github.com/user/repo/releases/download/v1.0.0/file.zip</code></pre>
         </li>
         <li><strong>原始文件 (Raw Content):</strong>
             <pre>原地址: <code>https://raw.githubusercontent.com/user/repo/branch/file.txt</code>
-加速后: <code>https://${domain}/raw.githubusercontent.com/user/repo/branch/file.txt</code></pre>
+加速后: <code>https://${domain}/https://raw.githubusercontent.com/user/repo/branch/file.txt</code></pre>
         </li>
-        <li><strong>其他 git/assets/gist/codeload 等域名加速方式类似。</strong></li>
     </ul>
     <p>本服务基于 <a href="https://github.com/hunshcn/gh-proxy" target="_blank">hunshcn/gh-proxy</a> 的 Workers 逻辑修改。</p>
 </body>
@@ -80,7 +78,13 @@ async function handleRequest(request) {
     }
 
     // 2. 代理逻辑
-    const TARGET_URL = 'https://' + path; // 构造目标 URL
+    // path 已经是 https://github.com/... 或 https:/raw.githubusercontent.com/...
+    const TARGET_URL = path; 
+
+    // 检查是否以 "http://" 或 "https://" 开头，防止路径被意外截断
+    if (!TARGET_URL.startsWith('http://') && !TARGET_URL.startsWith('https://')) {
+        return new Response('Error: Invalid URL format. Target URL must start with http:// or https://.', { status: 400 });
+    }
 
     // 检查是否是合法的目标域名，防止开放代理
     const allowedHosts = [
@@ -124,14 +128,13 @@ async function handleRequest(request) {
         newResponse.headers.delete('Content-Security-Policy');
         newResponse.headers.delete('Strict-Transport-Security');
 
-        // 缓存处理 (可选: 可根据需求调整缓存策略)
-        // 确保 Pages Function 部署后能生效，通常 Pages 自身带有 CDN 缓存。
-        // newResponse.headers.set('Cache-Control', 'public, max-age=86400'); // 例如，缓存一天
+        // 缓存处理
+        // newResponse.headers.set('Cache-Control', 'public, max-age=86400');
 
         return newResponse;
 
     } catch (e) {
         // URL 格式错误或其他异常
-        return new Response(`Error processing request: ${e.message}`, { status: 500 });
+        return new Response(`Error processing request or invalid URL: ${e.message}`, { status: 500 });
     }
 }
