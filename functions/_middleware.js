@@ -50,7 +50,7 @@ export default {
         return proxy(path, req);
       }
 
-      // 兜底：本地 404 页（或 /sw.js、/conf.js 等）
+      // 兜底：本地 404 页
       return fetch(new URL('/404.html', url).href);
     } catch (e) {
       return makeRes('Pages Functions error:\n' + (e.stack || e), 502);
@@ -61,6 +61,7 @@ export default {
 async function proxy(target, req) {
   const u = newUrl(target);
   if (!u) return makeRes('invalid url', 400);
+
   if (req.method === 'OPTIONS' && req.headers.has('access-control-request-headers')) {
     return new Response(null, {
       status: 204,
@@ -71,14 +72,16 @@ async function proxy(target, req) {
       },
     });
   }
+
   let res = await fetch(u.href, {
     method: req.method,
     headers: req.headers,
     body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
     redirect: 'manual',
   });
+
   if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
-    let loc = res.headers.get('location');
+    const loc = res.headers.get('location');
     if (checkUrl(loc)) {
       const h = new Headers(res.headers);
       h.set('location', PREFIX + loc);
@@ -86,11 +89,13 @@ async function proxy(target, req) {
     }
     return proxy(loc, req);
   }
+
   const h = new Headers(res.headers);
   h.set('access-control-allow-origin', '*');
   h.set('access-control-expose-headers', '*');
   h.delete('content-security-policy');
   h.delete('content-security-policy-report-only');
   h.delete('clear-site-data');
+
   return new Response(res.body, { status: res.status, headers: h });
 }
