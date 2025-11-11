@@ -1,162 +1,85 @@
-// functions/[[path]].js
-
-/**
- * gh-proxy 核心代理逻辑 - 适用于 Cloudflare Pages Function
- *
- * 原始 ASSET_URL 的作用是处理对前端页面的请求，但在 Pages 部署中，
- * 静态文件（public/index.html）会由 Pages 自动处理，因此
- * 这里只需要实现动态的代理转发逻辑。
- */
-
-// 匹配 GitHub 相关 URL 的正则表达式
-// 原始 gh-proxy 使用了一组更复杂的正则，这里使用简化的、核心的匹配模式
-const EXP1 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i; // releases/archive
-const EXP2 = /^(?:https?:\/\/)?raw\.githubusercontent\.com\/.+?\/.+?\/.+?$/i;   // raw
-const EXP3 = /^(?:https?:\/\/)?gist\.githubusercontent\.com\/.+?\/.+?\/raw\/.+$/i; // gist
-const EXP4 = /^(?:https?:\/\/)?github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;      // blob/raw
-const EXP5 = /^(?:https?:\/\/)?github\.com\/.*?\/(?:archive|releases)\/.*$/i;   // git archive/releases
-
-// 默认不启用白名单，如果需要，请在 Pages Function 环境变量中设置 WHITE_LIST
-const WHITE_LIST = []; 
-const PREFIX = '/'; // Pages 根路径部署
-
-const PREFLIGHT_INIT = {
-    status: 204,
-    headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,HEAD,DELETE,OPTIONS',
-        'Access-Control-Max-Age': '1728000',
-    },
-}
-
-/**
- * 代理请求处理函数
- * @param {Request} request
- * @param {import('@cloudflare/workers-types').EventContext} env
- * @returns {Promise<Response>}
- */
-export async function onRequest({ request, next }) {
-    const url = new URL(request.url);
-    const pathname = url.pathname.slice(PREFIX.length);
-    const reqHdrRaw = request.headers;
-
-    // 1. 预检请求 (OPTIONS)
-    if (request.method === 'OPTIONS' && reqHdrRaw.has('access-control-request-headers')) {
-        return new Response(null, PREFLIGHT_INIT);
-    }
-
-    // 2. Pages 静态文件处理 (index.html)
-    // 根路径请求，让 Pages 自动返回 public/index.html
-    if (pathname === '') {
-        return next();
-    }
-    
-    // 3. 核心代理逻辑
-    let urlStr = pathname;
-
-    // 检查白名单
-    let allow = WHITE_LIST.length === 0;
-    for (const item of WHITE_LIST) {
-        if (urlStr.includes(item)) {
-            allow = true;
-            break;
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <title>GitHub 加速代理 (Cloudflare Pages)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous">
+    <style>
+        body { padding-top: 50px; }
+        .container { max-width: 800px; }
+        #result-box {
+            word-break: break-all;
+            white-space: normal;
         }
-    }
-    if (!allow) {
-        return new Response("blocked", { status: 403 });
-    }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-center mb-4">GitHub 加速代理</h1>
+        <div class="card">
+            <div class="card-body">
+                <p class="card-text text-muted">本服务部署于 Cloudflare Pages，不依赖 hunshcn 的外部静态资源。</p>
+                <div class="input-group mb-3">
+                    <input type="url" id="original-url" class="form-control" placeholder="输入 GitHub 文件、Release 或 Archive 链接" required>
+                    <button class="btn btn-primary" type="button" onclick="generateProxyUrl()">加速</button>
+                </div>
+                
+                <div id="result-box" class="mt-4 p-3 border rounded bg-light" style="display:none;">
+                    <h5>加速链接:</h5>
+                    <div class="input-group">
+                        <input type="text" id="proxy-url" class="form-control" readonly>
+                        <button class="btn btn-outline-secondary" type="button" onclick="copyUrl('proxy-url')">复制</button>
+                    </div>
+                    <small class="form-text text-muted mt-2 d-block">可以直接用此链接下载、`git clone` 或 `curl`。</small>
+                </div>
+            </div>
+        </div>
+        
+        <footer class="text-center mt-5 text-muted">
+            <small>基于 <a href="https://github.com/hunshcn/gh-proxy" target="_blank">hunshcn/gh-proxy</a> 核心逻辑</small>
+        </footer>
+    </div>
 
-    // 完整 URL 模式
-    if (urlStr.search(/^https?:\/\//) !== 0) {
-        urlStr = 'https://' + urlStr;
-    }
+    <script>
+        function generateProxyUrl() {
+            const originalUrlInput = document.getElementById('original-url');
+            const proxyUrlInput = document.getElementById('proxy-url');
+            const resultBox = document.getElementById('result-box');
+            
+            let originalUrl = originalUrlInput.value.trim();
+            if (!originalUrl) {
+                alert('请输入一个有效的 GitHub 链接');
+                return;
+            }
 
-    const targetUrl = newUrl(urlStr);
-    if (!targetUrl) {
-         // 如果不是有效的URL，让Pages处理，返回404或静态文件
-        return next();
-    }
+            // 1. 获取当前 Pages 站点的基础 URL (确保没有 /index.html)
+            const baseUrl = window.location.origin + window.location.pathname.replace(/\/index\.html$/i, '');
+            const base = baseUrl.split('?')[0].split('#')[0].replace(/\/$/, '');
+            
+            // 2. 移除原始链接中的协议头 (http/https)，只保留域名和路径
+            // 例如：https://github.com/user/repo -> github.com/user/repo
+            let proxyPath = originalUrl.replace(/^https?:\/\//, '');
 
-    // 检查是否为 raw.githubusercontent.com 走 jsdelivr CDN 逻辑 (可选加速)
-    if (targetUrl.href.search(EXP2) === 0) {
-        // 原始逻辑：将 raw.githubusercontent.com 转发给 jsdelivr CDN
-        const newUrl = targetUrl.href.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1').replace(/^(?:https?:\/\/)?raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh');
-        return Response.redirect(newUrl, 302);
-    }
-
-    // 检查是否为其他 GitHub URL，不走 CDN
-    if (targetUrl.href.search(EXP1) === 0 || targetUrl.href.search(EXP3) === 0 || targetUrl.href.search(EXP4) === 0 || targetUrl.href.search(EXP5) === 0) {
-        // 执行常规代理
-        return proxy(targetUrl, request);
-    }
-    
-    // 如果不匹配任何代理模式，或者只是静态文件请求（如 /favicon.ico），
-    // 允许它继续传递给 Pages 静态资源服务，Pages 会返回 404 或静态文件。
-    return next();
-}
-
-
-/**
- * 构造 URL 对象
- * @param {string} urlStr 
- */
-function newUrl(urlStr) {
-    try {
-        return new URL(urlStr);
-    } catch (err) {
-        return null;
-    }
-}
-
-/**
- * 核心转发函数
- * @param {URL} urlObj 目标 URL
- * @param {Request} req 原始请求
- * @returns {Promise<Response>}
- */
-async function proxy(urlObj, req) {
-    const reqHdrRaw = req.headers;
-    const reqHdrNew = new Headers(reqHdrRaw);
-    
-    // 移除可能导致问题的头信息
-    reqHdrNew.delete('host');
-    // reqHdrNew.delete('referer'); // 保留 referer 避免某些网站检查
-    reqHdrNew.delete('cf-connecting-ip');
-    reqHdrNew.delete('x-forwarded-for');
-    reqHdrNew.delete('x-real-ip');
-
-    /** @type {RequestInit} */
-    const reqInit = { 
-        method: req.method, 
-        headers: reqHdrNew, 
-        redirect: 'manual', // 关键：手动处理重定向
-        body: req.method === 'GET' || req.method === 'HEAD' ? null : req.body,
-    };
-
-    const res = await fetch(urlObj.href, reqInit);
-    const resHdrNew = new Headers(res.headers);
-    const status = res.status;
-
-    // 处理重定向
-    if (resHdrNew.has('location')) {
-        let _location = resHdrNew.get('location');
-        // 如果重定向目标是 GitHub 相关的链接，则重写为代理链接
-        if (_location.search(EXP1) === 0 || _location.search(EXP4) === 0) {
-            // 将重定向链接重写为代理地址
-            resHdrNew.set('location', PREFIX + _location);
-        } else {
-            // 如果不是 GitHub 相关链接，取消手动处理，让浏览器自行跳转或内部重试
-            reqInit.redirect = 'follow';
-            return proxy(newUrl(_location), reqInit);
+            // 3. 构造最终的加速链接: [Pages 域名]/[原始链接去协议头]
+            const finalUrl = `${base}/${proxyPath}`;
+            
+            proxyUrlInput.value = finalUrl;
+            resultBox.style.display = 'block';
         }
-    }
 
-    // 添加 CORS 头
-    resHdrNew.set('access-control-expose-headers', '*');
-    resHdrNew.set('access-control-allow-origin', '*');
-    resHdrNew.delete('content-security-policy');
-    resHdrNew.delete('content-security-policy-report-only');
-    resHdrNew.delete('clear-site-data');
-
-    return new Response(res.body, { status, headers: resHdrNew });
-}
+        function copyUrl(elementId) {
+            const element = document.getElementById(elementId);
+            element.select();
+            element.setSelectionRange(0, 99999);
+            try {
+                document.execCommand('copy');
+                alert('链接已复制!');
+            } catch (err) {
+                console.error('无法复制文本', err);
+                alert('复制失败，请手动复制。');
+            }
+        }
+    </script>
+</body>
+</html>
