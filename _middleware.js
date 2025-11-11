@@ -1,100 +1,118 @@
-// functions/_middleware.js
-const PREFIX = '/';
-const Config = { jsdelivr: 0 };
-const whiteList = [];
+/**
+ * Cloudflare Pages 版 gh-proxy
+ * 完全去掉 https://hunshcn.github.io/gh-proxy 依赖
+ * 静态文件走 Pages 自己托管
+ */
+const PREFIX = '/__gh_proxy__';
 
-const exp1 = /^https?:\/\/github\.com\/.+?\/.+?\/(?:releases|archive)\/.*$/i;
-const exp2 = /^https?:\/\/github\.com\/.+?\/.+?\/(?:blob|raw)\/.*$/i;
-const exp3 = /^https?:\/\/github\.com\/.+?\/.+?\/(?:info|git-).*$/i;
-const exp4 = /^https?:\/\/raw\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+?\/.+$/i;
-const exp5 = /^https?:\/\/gist\.(?:githubusercontent|github)\.com\/.+?\/.+?\/.+$/i;
-const exp6 = /^https?:\/\/github\.com\/.+?\/.+?\/tags.*$/i;
-
-const makeRes = (body, status = 200, headers = {}) =>
-  new Response(body, { status, headers: { ...headers, 'access-control-allow-origin': '*' } });
-
-const newUrl = (s) => { try { return new URL(s); } catch { return null; } };
-
-const checkUrl = (u) => [exp1, exp2, exp3, exp4, exp5, exp6].some((re) => re.test(u));
-
-export default {
-  async fetch(req, env, ctx) {
-    try {
-      const url = new URL(req.url);
-      const q = url.searchParams.get('q');
-      if (q) return Response.redirect(`${url.origin}${PREFIX}${q}`, 301);
-
-      let path = url.href.slice(url.origin.length + PREFIX.length).replace(/^https?:\/+/, 'https://');
-
-      if (whiteList.length && !whiteList.some((w) => path.includes(w))) {
-        return new Response('blocked', { status: 403 });
-      }
-
-      if (exp1.test(path) || exp5.test(path) || exp6.test(path) || exp3.test(path)) {
-        return proxy(path, req);
-      }
-      if (exp2.test(path)) {
-        if (Config.jsdelivr) {
-          const cdn = path.replace('/blob/', '@').replace(/^https?:\/\/github\.com/, 'https://cdn.jsdelivr.net/gh');
-          return Response.redirect(cdn, 302);
-        }
-        path = path.replace('/blob/', '/raw/');
-        return proxy(path, req);
-      }
-      if (exp4.test(path)) {
-        if (Config.jsdelivr) {
-          const cdn = path.replace(/(?<=com\/.+?\/.+?)\/(.+?\/)/, '@$1')
-                        .replace(/^https?:\/\/raw\.(?:githubusercontent|github)\.com/, 'https://cdn.jsdelivr.net/gh');
-          return Response.redirect(cdn, 302);
-        }
-        return proxy(path, req);
-      }
-
-      return fetch(new URL('/404.html', url).href);
-    } catch (e) {
-      return makeRes('Pages Functions error:\n' + (e.stack || e), 502);
-    }
-  },
+const CORS_HEADERS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'access-control-allow-headers': 'Content-Type, Authorization',
 };
 
-async function proxy(target, req) {
-  const u = newUrl(target);
-  if (!u) return makeRes('invalid url', 400);
+async function fetchWithRetry(url, options = {}, retries = 3) {
+  try {
+    const res = await fetch(url, options);
+    if (res.status >= 200 && res.status < 300) return res;
+    throw new Error(`HTTP ${res.status}`);
+  } catch (e) {
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 1000));
+      return fetchWithRetry(url, options, retries - 1);
+    }
+    throw e;
+  }
+}
 
-  if (req.method === 'OPTIONS' && req.headers.has('access-control-request-headers')) {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'access-control-allow-origin': '*',
-        'access-control-allow-methods': 'GET,POST,PUT,PATCH,TRACE,DELETE,HEAD,OPTIONS',
-        'access-control-max-age': '1728000',
-      },
+function jsonResponse(obj, status = 200) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { 'content-type': 'application/json', ...CORS_HEADERS },
+  });
+}
+
+// 默认首页 HTML
+const HOME_HTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>gh-proxy</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="/favicon.ico" />
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;padding:2rem}
+    input{width:100%;max-width:420px;padding:.5rem;margin:.5rem 0}
+    button{padding:.5rem 1rem}
+  </style>
+</head>
+<body>
+  <h1>gh-proxy</h1>
+  <p>零依赖版 GitHub 文件代理（Cloudflare Pages）</p>
+  <form id="form">
+    <input id="url" type="text" placeholder="https://github.com/xxx/xxx/releases/download/xxx.zip" />
+    <button type="submit">代理下载</button>
+  </form>
+  <script>
+    document.getElementById('form').onsubmit=(e)=>{
+      e.preventDefault();
+      const u=document.getElementById('url').value.trim();
+      if(!u)return;
+      location.href='/__gh_proxy__?url='+encodeURIComponent(u);
+    };
+  </script>
+</body>
+</html>`;
+
+export async function onRequest(ctx) {
+  const { request, env } = ctx;
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  // 1. CORS 预检
+  if (request.method === 'OPTIONS')
+    return new Response(null, { headers: CORS_HEADERS });
+
+  // 2. 代理路由
+  if (path.startsWith(PREFIX)) {
+    const target = url.searchParams.get('url');
+    if (!target)
+      return jsonResponse({ error: '缺少 url 参数' }, 400);
+
+    let t;
+    try { t = new URL(target); } catch {
+      return jsonResponse({ error: '无效 url' }, 400);
+    }
+    if (t.protocol !== 'http:' && t.protocol !== 'https:')
+      return jsonResponse({ error: '仅支持 http(s)' }, 400);
+
+    try {
+      const res = await fetchWithRetry(target, {
+        method: request.method,
+        headers: {
+          'user-agent': request.headers.get('user-agent') || 'CF-Pages-gh-proxy',
+        },
+      });
+      // 把远端响应原样返回，加上 CORS
+      const { readable, writable } = new TransformStream();
+      res.body.pipeTo(writable);
+      return new Response(readable, {
+        status: res.status,
+        headers: { ...Object.fromEntries(res.headers), ...CORS_HEADERS },
+      });
+    } catch (e) {
+      return jsonResponse({ error: '代理失败: ' + e.message }, 500);
+    }
+  }
+
+  // 3. 根路径返回首页
+  if (path === '/') {
+    return new Response(HOME_HTML, {
+      headers: { 'content-type': 'text/html;charset=utf-8', ...CORS_HEADERS },
     });
   }
 
-  let res = await fetch(u.href, {
-    method: req.method,
-    headers: req.headers,
-    body: req.method !== 'GET' && req.method !== 'HEAD' ? req.body : undefined,
-    redirect: 'manual',
-  });
-
-  if (res.status >= 300 && res.status < 400 && res.headers.has('location')) {
-    const loc = res.headers.get('location');
-    if (checkUrl(loc)) {
-      const h = new Headers(res.headers);
-      h.set('location', PREFIX + loc);
-      return new Response(null, { status: res.status, headers: h });
-    }
-    return proxy(loc, req);
-  }
-
-  const h = new Headers(res.headers);
-  h.set('access-control-allow-origin', '*');
-  h.set('access-control-expose-headers', '*');
-  h.delete('content-security-policy');
-  h.delete('content-security-policy-report-only');
-  h.delete('clear-site-data');
-
-  return new Response(res.body, { status: res.status, headers: h });
+  // 4. 其余路径（/favicon.ico、/robots.txt 等）直接让 Pages 的静态资源接管
+  //    这里显式放过，Pages 会自动去 public/ 下找；找不到会 404。
+  return await ctx.next();
 }
