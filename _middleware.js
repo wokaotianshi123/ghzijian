@@ -1,233 +1,194 @@
-// gh-proxy Pages Functions 版本
-// 去除了对 const ASSET_URL = 'https://hunshcn.github.io/gh-proxy'; 的依赖
+// Cloudflare Pages Functions (Functions 是 Pages 部署的后端逻辑)
 
-const PREFLIGHT_INIT = {
-  headers: {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE',
-    'Access-Control-Allow-Headers': 'content-type,authorization,x-requested-with',
-    'Cache-Control': 'max-age=172800',
-  },
-};
+// 定义配置变量
+// 注意：Pages Functions 不像 Workers 可以直接访问 HTML 文件。
+// 最简单的 Pages 部署通常是静态文件。对于 gh-proxy 这种需要
+// 动态处理请求的，使用 Functions 是最合适的，它本质上是一个 Worker。
 
-// 内置的 HTML 内容 (原 gh-proxy 页面的核心结构和JS逻辑)
-// 注意：这个 HTML 包含必要的 JS 逻辑，使其能够独立运行。
-// 为了简洁和适应 Pages Functions，我们只保留核心的 HTML 和 JS 逻辑。
-// 原版 Worker 依赖的 ASSET_URL 主要是为了获取这个 index.html 的内容。
-const ASSET_HTML = `
+// 移除了 const ASSET_URL = 'https://hunshcn.github.io/gh-proxy/'; 依赖。
+// Pages Functions 部署不需要外部的 JS 或 CSS 文件来运行核心逻辑。
+
+// 代理的目标主机名（GitHub Raw/Blob）
+const HOSTS = [
+  'raw.githubusercontent.com',
+  'github.com',
+  'codeload.github.com',
+];
+
+// 默认的 HTML 内容
+const HTML = `
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-    <meta name="referrer" content="never">
-    <title>GitHub文件加速</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; line-height: 1.6; color: #333; }
-        h1 { text-align: center; color: #444; }
-        .container { background-color: #f9f9f9; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        input[type="text"] { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-        button { background-color: #5cb85c; color: white; padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 10px; }
-        button:hover { background-color: #4cae4c; }
-        .result { margin-top: 20px; padding: 10px; background-color: #e9ecef; border-radius: 4px; word-break: break-all; }
-    </style>
+  <meta charset="utf-8">
+  <title>GitHub Proxy</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 30px auto; padding: 0 20px; }
+    h1 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+    p { margin-bottom: 1em; }
+    code { background: #f4f4f4; padding: 2px 4px; border-radius: 4px; }
+    .container { padding: 20px; border: 1px solid #ddd; border-radius: 8px; background: #f9f9f9; }
+    .example { margin-top: 15px; border-top: 1px dashed #ccc; padding-top: 15px; }
+    .url-input { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    .url-button { padding: 10px 15px; background: #42b983; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .footer { margin-top: 30px; font-size: 0.9em; color: #777; text-align: center; }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>GitHub文件加速</h1>
-        <p>输入 GitHub 文件链接（如 Release/Raw/Archive 链接），点击“加速”以生成代理链接。</p>
-        <input type="text" id="urlInput" placeholder="请输入 GitHub 文件链接">
-        <button onclick="generateLink()">加速</button>
-        <div class="result" id="output"></div>
-    </div>
-    <script>
-        function generateLink() {
-            const input = document.getElementById('urlInput');
-            const output = document.getElementById('output');
-            const originalUrl = input.value.trim();
+  <h1>GitHub Proxy for Cloudflare Pages</h1>
+  <div class="container">
+    <p>本项目旨在提供 GitHub 文件和仓库的代理服务，以加速访问速度。</p>
+    <p><strong>使用方法:</strong></p>
+    <p>将需要代理的 GitHub URL 粘贴到下方，点击生成代理链接。</p>
+    <input type="text" id="github-url" class="url-input" placeholder="例如: https://github.com/hunshcn/gh-proxy/blob/master/index.html">
+    <button class="url-button" onclick="generateProxyUrl()">生成代理链接</button>
+    <p class="example">
+      <strong>代理链接:</strong> <code id="proxy-url"></code>
+    </p>
+    <p><strong>注意:</strong></p>
+    <ul>
+      <li>Pages Functions 具有请求体大小限制。</li>
+      <li>如果直接访问本页面，代理逻辑在 JavaScript 中，仅供参考。</li>
+      <li>实际的代理功能是通过访问 <code>/目标URL</code> 来触发 Pages Functions。</li>
+    </ul>
+  </div>
 
-            if (!originalUrl) {
-                output.innerHTML = '请输入有效的链接';
-                return;
-            }
+  <div class="footer">
+    <p>基于 hunshcn/gh-proxy 项目的 Cloudflare Pages Functions 实现。</p>
+  </div>
 
-            // 获取当前域名作为代理前缀
-            const proxyHost = window.location.origin;
-            
-            let proxyPath = '';
+  <script>
+    function generateProxyUrl() {
+      const input = document.getElementById('github-url');
+      const output = document.getElementById('proxy-url');
+      const githubUrl = input.value.trim();
 
-            try {
-                const url = new URL(originalUrl);
-                
-                // 仅支持 github.com 或 raw.githubusercontent.com
-                if (url.hostname === 'github.com') {
-                    // 对于 github.com/user/repo/blob/... 或 github.com/user/repo/releases/...
-                    // 我们直接使用完整的路径作为代理路径
-                    proxyPath = url.pathname.startsWith('/') ? url.pathname.substring(1) : url.pathname;
-                } else if (url.hostname === 'raw.githubusercontent.com') {
-                    // 对于 raw.githubusercontent.com/...
-                    proxyPath = 'https://raw.githubusercontent.com' + url.pathname;
-                } else if (url.hostname === 'github.global.ssl.fastly.net') {
-                    // 对于 releases.github.com 的 CDN 链接
-                    proxyPath = originalUrl.replace('https://github.global.ssl.fastly.net/', '');
-                } else {
-                    output.innerHTML = '仅支持 github.com 或 raw.githubusercontent.com 链接。';
-                    return;
-                }
-                
-                // 完整的代理链接
-                const proxyLink = \`\${proxyHost}/\${proxyPath}\`;
-                
-                output.innerHTML = '<strong>加速链接:</strong> <a href="' + proxyLink + '" target="_blank">' + proxyLink + '</a>';
-                
-            } catch (e) {
-                output.innerHTML = '链接格式不正确';
-            }
-        }
-    </script>
+      if (githubUrl) {
+        // 假设您的 Pages URL 是 https://your-site.pages.dev
+        // 代理链接就是 https://your-site.pages.dev/https://github.com/...
+        output.textContent = window.location.origin + '/' + githubUrl.replace(/^(https?:\/\/)/, '');
+      } else {
+        output.textContent = '请输入一个 GitHub URL。';
+      }
+    }
+  </script>
 </body>
 </html>
 `;
 
 /**
- * @param {URL} urlObj
- * @param {RequestInit} reqInit
+ * 检查并返回要代理的 URL
+ * @param {URL} url - 请求的 URL 对象
+ * @returns {string | null} 目标 URL 字符串，如果不是有效目标则返回 null
  */
-async function proxy(urlObj, reqInit) {
-  const res = await fetch(urlObj.href, reqInit);
-  const resHdrOld = res.headers;
-  const resHdrNew = new Headers(resHdrOld);
-  const status = res.status;
+function getTargetUrl(url) {
+  // 检查路径部分是否包含目标 URL，通常 Pages Functions 会捕获所有路径
+  // 例如：https://your.pages.dev/https://raw.githubusercontent.com/user/repo/master/file.txt
+  const path = url.pathname.slice(1); // 去掉开头的 /
 
-  // 检查是否是重定向，并且重定向地址仍然是 GitHub/Raw 的
-  if ([301, 302, 303, 307, 308].includes(status) && resHdrNew.has('location')) {
-    let _location = resHdrNew.get('location');
-    const locationUrl = new URL(_location, urlObj.origin);
-    
-    // 如果重定向目标仍在 github/raw 域，则重写 location 头
-    if (checkUrl(locationUrl.href)) {
-      // 在 Pages Functions 中，PREFIX 实际上是当前页面的根路径
-      const PREFIX = new URL(reqInit.cf.url).origin + '/';
-      _location = PREFIX + urlParse(locationUrl.href).pathname;
-      resHdrNew.set('location', _location);
-    } else {
-      // 否则，直接跟随重定向
-      reqInit.redirect = 'follow';
-      return proxy(locationUrl, reqInit);
+  if (path) {
+    // 尝试解析路径作为完整的 URL
+    try {
+      const targetUrl = new URL(path.startsWith('http') ? path : 'https://' + path);
+      
+      // 检查主机名是否在允许的列表中
+      if (HOSTS.includes(targetUrl.hostname)) {
+        return targetUrl.toString();
+      }
+    } catch (e) {
+      // URL 解析失败，可能是无效格式
+      console.error("Invalid target URL in path:", path, e);
     }
   }
 
-  // 跨域设置
-  resHdrNew.set('access-control-expose-headers', '*');
-  resHdrNew.set('access-control-allow-origin', '*');
-  resHdrNew.delete('content-security-policy');
-  resHdrNew.delete('content-security-policy-report-only');
-  resHdrNew.delete('set-cookie');
-
-  return new Response(res.body, {
-    status,
-    headers: resHdrNew,
-  });
+  // 如果没有有效的代理目标，返回 null
+  return null;
 }
 
 /**
- * @param {string} urlStr
+ * 处理传入的 Fetch 请求
+ * @param {Request} request - 传入的请求对象
+ * @param {Context} context - Pages Functions 的上下文对象
+ * @returns {Response} 响应对象
  */
-function checkUrl(urlStr) {
-  // 简化白名单，只检查是否是 GitHub 相关域名
-  try {
-    const url = new URL(urlStr);
-    return [
-      'github.com',
-      'raw.githubusercontent.com',
-      'github.global.ssl.fastly.net',
-      'objects.githubusercontent.com',
-    ].includes(url.hostname);
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * @param {string} urlStr
- */
-function urlParse(urlStr) {
-    const url = new URL(urlStr);
-    let pathname = url.pathname;
-    // 移除路径开头多余的斜杠
-    while (pathname.startsWith('/')) {
-        pathname = pathname.substring(1);
-    }
-    // 匹配原始 Worker 的逻辑，将路径转换为代理目标 URL
-    if (pathname.startsWith('http://') || pathname.startsWith('https://')) {
-        return new URL(pathname); // 已经是完整 URL
-    } else if (pathname.startsWith('raw.githubusercontent.com')) {
-        return new URL('https://' + pathname); // raw.githubusercontent.com/...
-    } else if (pathname.startsWith('github.com')) {
-        return new URL('https://' + pathname); // github.com/...
-    } else if (pathname.includes('/releases/download/')) {
-        return new URL('https://github.com/' + pathname); // user/repo/releases/download/...
-    } else {
-        return new URL('https://raw.githubusercontent.com/' + pathname); // user/repo/branch/file
-    }
-}
-
-
-/**
- * Pages Functions entry point (middleware)
- * @param {EventContext} context
- */
-export async function onRequest(context) {
-  const { request } = context;
+export async function onRequest({ request }) {
   const url = new URL(request.url);
-  let pathname = url.pathname.substring(1);
+  const targetUrl = getTargetUrl(url);
 
-  if (request.method === 'OPTIONS') {
-    return new Response(null, PREFLIGHT_INIT);
-  }
-
-  // 根路径 "/" 返回内置的 HTML 页面
-  if (pathname === '' || pathname === 'index.html') {
-    return new Response(ASSET_HTML, {
+  if (!targetUrl) {
+    // 如果没有有效的代理目标，返回默认 HTML 页面
+    return new Response(HTML, {
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-cache',
       },
     });
   }
 
-  // 其他路径作为代理目标
   try {
-    const urlObj = urlParse(pathname);
-    
-    // 检查是否在白名单内（虽然我们简化了 urlParse，但保留这个检查）
-    if (!checkUrl(urlObj.href)) {
-        return new Response("Invalid URL for proxy", { status: 403 });
-    }
-    
-    const reqHdrRaw = request.headers;
-    const reqHdrNew = new Headers(reqHdrRaw);
-    
-    // 清理头部，防止冲突
-    reqHdrNew.delete('host');
-    reqHdrNew.delete('referer');
-    
-    /** @type {RequestInit} */
-    const reqInit = {
+    // 创建新的请求对象，用于代理
+    const proxyRequest = new Request(targetUrl, {
       method: request.method,
-      headers: reqHdrNew,
-      redirect: 'manual', // 手动处理重定向
+      headers: request.headers,
+      redirect: 'manual', // 不自动跟随重定向
       body: request.body,
-      // @ts-ignore Cloudflare Worker/Pages 允许此属性
-      cf: {
-          url: request.url, // 传递当前 URL
+    });
+
+    // 移除可能导致问题的 Headers
+    proxyRequest.headers.delete('host');
+    proxyRequest.headers.delete('if-modified-since');
+    proxyRequest.headers.delete('if-none-match');
+
+    // 发送代理请求
+    let response = await fetch(proxyRequest);
+
+    // 检查并处理重定向
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      const location = response.headers.get('location');
+      if (location) {
+        // 重写重定向的 Location 头部，使其指向代理地址
+        const newLocation = url.origin + '/' + location.replace(/^(https?:\/\/)/, '');
+        response = new Response(response.body, response);
+        response.headers.set('location', newLocation);
       }
-    };
+    }
+
+    // 设置响应头部，允许 CORS 跨域
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set('Access-Control-Allow-Origin', '*');
+    responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    responseHeaders.set('Access-Control-Allow-Headers', request.headers.get('Access-Control-Request-Headers') || '*');
     
-    return proxy(urlObj, reqInit);
-    
-  } catch (e) {
-    console.error(e);
-    return new Response('Proxy Error: ' + e.message, { status: 500 });
+    // 返回代理的响应
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
+  } catch (error) {
+    console.error("Proxy failed:", error);
+    return new Response(`Proxy Error: ${error.message}`, { status: 500 });
   }
+}
+
+// Pages Functions 的 OPTIONS 请求预检处理
+export async function onPreflight({ request }) {
+  if (request.method === 'OPTIONS') {
+    const headers = new Headers({
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+      'Access-Control-Max-Age': '86400',
+    });
+
+    const allowHeaders = request.headers.get('Access-Control-Request-Headers');
+    if (allowHeaders) {
+      headers.set('Access-Control-Allow-Headers', allowHeaders);
+    }
+
+    return new Response(null, {
+      status: 204,
+      headers: headers,
+    });
+  }
+  return null;
 }
